@@ -6,7 +6,6 @@ from google import genai
 from google.genai import types
 import edge_tts
 
-# Cargar claves desde Render
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
@@ -15,7 +14,9 @@ gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 SYSTEM_INSTRUCTION = (
     "Eres una asistente personal inteligente, atenta y eficiente. "
     "Ayudas al usuario con sus tareas escolares, organizas sus rutinas "
-    "y respondes de forma clara, directa y amigable en español."
+    "y respondes de forma clara, directa y amigable en español. "
+    "Si el usuario se despide (ej. 'adiós', 'nos vemos', 'hablamos luego'), "
+    "respóndele con una despedida afable y amable."
 )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
