@@ -1,82 +1,92 @@
+import json
 import os
-import asyncio
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
-from google import genai
-from google.genai import types
-import edge_tts
+import threading
+import time
+import urllib.request
+from flask import Flask
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+app = Flask(__name__)
 
-gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+TELEGRAM_TOKEN = os.environ.get("8904343276:AAE0JpTYGKis2kHCAW1ZEVCRUGHwuFjxlfM")
+GEMINI_API_KEY = os.environ.get("AQ.Ab8RN6I8VOb728ctW76SY8fx9XSqGK9FggEtUOk6lwOoUz1vWg")
 
-SYSTEM_INSTRUCTION = (
-    "Eres una asistente personal inteligente, atenta y eficiente. "
-    "Ayudas al usuario con sus tareas escolares, organizas sus rutinas "
-    "y respondes de forma clara, directa y amigable en español. "
-    "Si el usuario se despide (ej. 'adiós', 'nos vemos', 'hablamos luego'), "
-    "respóndele con una despedida afable y amable."
-)
+SYSTEM_PROMPT = """
+Eres un asistente personal inteligente de organización y gestión del tiempo. 
+1. Analiza los fragmentos de chat o notas que te envíe el usuario.
+2. Extrae puntos clave, compromisos y acuerdos importantes.
+3. Organiza una lista clara de tareas pendientes para el día.
+Mantén las respuestas directas, ordenadas y enfocadas en la acción.
+"""
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("¡Hola! Tu asistente ya está activa 24/7 en la nube.")
 
-async def responder_texto(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
-    await update.message.chat.send_action("typing")
+@app.route("/")
+def home():
+  return "¡El bot de Telegram está activo 24/7!"
 
+
+def consultar_gemini(texto_usuario):
+  url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+  prompt_completo = (
+      f"{SYSTEM_PROMPT}\n\nMensaje o conversación:\n{texto_usuario}"
+  )
+  payload = {"contents": [{"parts": [{"text": prompt_completo}]}]}
+
+  data = json.dumps(payload).encode("utf-8")
+  req = urllib.request.Request(
+      url, data=data, headers={"Content-Type": "application/json"}
+  )
+
+  try:
+    with urllib.request.urlopen(req) as response:
+      res_data = json.loads(response.read().decode("utf-8"))
+      return res_data["candidates"][0]["content"]["parts"][0]["text"]
+  except Exception as e:
+    return f"Error con la IA: {e}"
+
+
+def enviar_mensaje(chat_id, texto):
+  url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+  payload = {"chat_id": chat_id, "text": texto}
+  data = json.dumps(payload).encode("utf-8")
+  req = urllib.request.Request(
+      url, data=data, headers={"Content-Type": "application/json"}
+  )
+  try:
+    urllib.request.urlopen(req)
+  except Exception as e:
+    print(f"Error al enviar mensaje: {e}")
+
+
+def telegram_bot_loop():
+  print("Bucle del bot iniciado...")
+  offset = 0
+  while True:
     try:
-        response = gemini_client.models.generate_content(
-            model='gemini-3.6-flash',
-            contents=user_text,
-            config=types.GenerateContentConfig(system_instruction=SYSTEM_INSTRUCTION)
-        )
-        await update.message.reply_text(response.text)
+      url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?offset={offset}&timeout=30"
+      with urllib.request.urlopen(url) as response:
+        resultado = json.loads(response.read().decode("utf-8"))
+
+        if resultado.get("ok"):
+          for update in resultado.get("result", []):
+            offset = update["update_id"] + 1
+            if "message" in update and "text" in update["message"]:
+              chat_id = update["message"]["chat"]["id"]
+              texto_usuario = update["message"]["text"]
+
+              print(f"Mensaje recibido: {texto_usuario}")
+              respuesta_ia = consultar_gemini(texto_usuario)
+              enviar_mensaje(chat_id, respuesta_ia)
     except Exception as e:
-        await update.message.reply_text(f"Error al responder: {e}")
+      print(f"Error de red en Telegram: {e}")
+      time.sleep(5)
 
-async def responder_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.chat.send_action("record_voice")
-
-    try:
-        voice_file = await update.message.voice.get_file()
-        voice_bytes = await voice_file.download_as_bytearray()
-
-        response = gemini_client.models.generate_content(
-            model='gemini-3.6-flash',
-            contents=[
-                types.Part.from_bytes(data=bytes(voice_bytes), mime_type='audio/ogg'),
-                "Escucha este audio y responde a la duda o solicitud del usuario en español."
-            ],
-            config=types.GenerateContentConfig(system_instruction=SYSTEM_INSTRUCTION)
-        )
-
-        texto_respuesta = response.text
-
-        tts = edge_tts.Communicate(texto_respuesta, "es-CO-SalomeNeural")
-        audio_out_path = "respuesta_voz.mp3"
-        await tts.save(audio_out_path)
-
-        await update.message.reply_text(texto_respuesta)
-        with open(audio_out_path, "rb") as voice_stream:
-            await update.message.reply_voice(voice=voice_stream)
-
-        if os.path.exists(audio_out_path):
-            os.remove(audio_out_path)
-
-    except Exception as e:
-        await update.message.reply_text(f"Error con el audio: {e}")
-
-def main():
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, responder_texto))
-    app.add_handler(MessageHandler(filters.VOICE, responder_audio))
-
-    print("✅ Bot iniciado correctamente en Render 24/7...")
-    app.run_polling()
 
 if __name__ == "__main__":
-    main()
+  # Iniciar el bot de Telegram en un hilo separado
+  t = threading.Thread(target=telegram_bot_loop)
+  t.daemon = True
+  t.start()
+
+  # Iniciar Flask en el hilo principal (Render asigna el puerto automáticamente)
+  port = int(os.environ.get("PORT", 10000))
+  app.run(host="0.0.0.0", port=port)
